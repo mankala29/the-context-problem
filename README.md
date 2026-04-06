@@ -1,4 +1,4 @@
-# Context Engineering Lab
+# The Context Problem
 
 **Engineering question:** Does context quality determine model output quality?
 
