@@ -218,6 +218,12 @@ data/store.py → retrieval/retriever.py → context/builder.py → inference/ll
 
 Graph RAG surfaces the origin of the data loop first. Flat RAG retrieves files without knowing their role in it.
 
+**Dependency graph visualization:**
+
+![Codebase Dependency Graph](codebase_graph.png)
+
+Red nodes = architectural hubs (top 30% by PageRank) · Blue nodes = standard nodes · Node size = centrality score · Edges = import dependencies
+
 **Reference:** [Evaluating Codebase-Oriented RAG through Knowledge Graph Analysis](https://gdotv.com/blog/codebase-rag-knowledge-graph-analysis-part-1/) — G-dot-V
 
 ---
