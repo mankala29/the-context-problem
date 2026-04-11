@@ -27,7 +27,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # add your Anthropic API key to .env
-python experiment.py
+python experiment.py   # Experiment 1
+python experiment2.py  # Experiment 2
 ```
 
 `.env` values:
@@ -45,20 +46,28 @@ QUALITY_THRESHOLD=0.5
 ## Project structure
 
 ```
-context_lab/
-├── experiment.py          # main experiment runner
-├── config.py              # settings (pydantic-settings + .env)
+the-context-problem/
+├── experiment.py              # Experiment 1 — retrieval degradation + MVCC
+├── experiment2.py             # Experiment 2 — graph-aware RAG vs flat RAG
+├── config.py                  # settings (pydantic-settings + .env)
+├── codebase_graph.png         # generated dependency graph visualization
 ├── data/
-│   ├── store.py           # MVCC-style versioned document store
-│   └── seed.py            # incident timeline (INC-001, runbook, service map)
+│   ├── store.py               # MVCC-style versioned document store
+│   └── seed.py                # incident timeline (INC-001, runbook, service map)
+├── graph/
+│   ├── parser.py              # AST parser — Python files → nodes + edges
+│   ├── store.py               # networkx graph store
+│   ├── analyzer.py            # PageRank centrality, hub detection
+│   └── visualizer.py          # dependency graph → PNG
 ├── retrieval/
-│   └── retriever.py       # 5 retrieval modes with configurable degradation
+│   ├── retriever.py           # 5 retrieval modes with configurable degradation
+│   └── graph_retriever.py     # graph-aware retriever — hubs first
 ├── context/
-│   └── builder.py         # token-budget-aware context construction
+│   └── builder.py             # token-budget-aware context construction (shared)
 ├── inference/
-│   └── llm.py             # Anthropic API wrapper
+│   └── llm.py                 # Anthropic API wrapper (shared)
 └── verification/
-    └── checker.py         # keyword-based quality checker + feedback trigger
+    └── checker.py             # quality checker + feedback trigger (shared)
 ```
 
 ---
@@ -162,6 +171,57 @@ The model never saw different data. Same store, same snapshot, same query. Only 
 
 ---
 
+---
+
+## Experiment 2 — Graph-Aware RAG vs Flat RAG
+
+**Theme: Data Loops**
+
+A data loop is a system where outputs are evaluated and fed back as inputs to improve the next iteration. The quality of each loop iteration depends entirely on what information enters it. This experiment asks: does graph structure help the retrieval layer feed the loop better?
+
+**What it does:**
+- Parses the codebase itself using Python AST
+- Builds a dependency graph (nodes = files, edges = imports)
+- Ranks files by PageRank centrality to identify architectural hubs
+- Compares flat retrieval (alphabetical) vs graph retrieval (centrality-ranked) under a tight token budget
+- Generates a dependency graph visualization (`codebase_graph.png`)
+
+**Hub detection output:**
+```
+graph/store.py    score=0.1498   depended on by 3 files
+config.py         score=0.1160   depended on by 2 files
+data/store.py     score=0.1160   depended on by 2 files
+```
+
+**Results — same 450-token budget, same 8 files, same model:**
+
+| Retrieval | `data/store.py` included? | Score | Pass? |
+|-----------|--------------------------|-------|-------|
+| Flat (alphabetical) | NO — crowded out by `seed.py` | 0.33 | NO |
+| Graph (PageRank) | YES — ranked as hub, included second | 1.00 | YES |
+
+**What the flat RAG model said (score 0.33):**
+> *"data/store.py is the foundational component — while it is not directly included in the context..."*
+
+It inferred the right answer from indirect clues but couldn't describe `VersionedStore`, `snapshot`, or MVCC because it never saw the file.
+
+**What the graph RAG model said (score 1.00):**
+> *"data/store.py implements a Versioned Document Store with MVCC-like snapshot isolation... every write creates a new version, a snapshot provides a consistent read view anchored at a specific timestamp... an engineer should read data/store.py first."*
+
+**Connection to Experiment 1 — Part 4:**
+Part 4 proved that insertion order determines which documents survive a tight token budget. Experiment 2 shows the principled solution: use the dependency graph to rank documents by centrality so the most architecturally important files always claim their slot first.
+
+**The data loop path made explicit by the graph:**
+```
+data/store.py → retrieval/retriever.py → context/builder.py → inference/llm.py → verification/checker.py → (retry) → retrieval/retriever.py
+```
+
+Graph RAG surfaces the origin of the data loop first. Flat RAG retrieves files without knowing their role in it.
+
+**Reference:** [Evaluating Codebase-Oriented RAG through Knowledge Graph Analysis](https://gdotv.com/blog/codebase-rag-knowledge-graph-analysis-part-1/) — G-dot-V
+
+---
+
 ## Key takeaways
 
 1. **The model is only as good as its context.** Every failure above was a context failure. The model's answers were accurate given what it received.
@@ -175,3 +235,7 @@ The model never saw different data. Same store, same snapshot, same query. Only 
 5. **Document ordering is a design decision.** Under budget pressure, the order you feed documents to the context builder determines which ones survive. Ranking is part of context engineering.
 
 6. **Self-correction is possible without changing the model.** The feedback loop in Part 3 recovered a 0.00 score to 1.00 purely by retrying with better context.
+
+7. **Graph structure solves the ordering problem.** PageRank centrality provides a principled ranking signal — architectural hubs surface first, ensuring the model always sees the most foundational components before the budget runs out.
+
+8. **Data loops need graph-aware retrieval.** If your retrieval layer doesn't understand the structure of your data, it will consistently feed the loop the wrong context. The loop iterates — but on the wrong foundation.
